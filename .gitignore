@@ -1,0 +1,115 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+env.bak/
+venv.bak/
+
+# Flask
+instance/
+.webassets-cache
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Database
+*.sqlite3
+*.db
+db.sqlite3-journal
+
+# Node.js / Frontend
+node_modules/
+npm-debug.log
+yarn-debug.log*
+yarn-error.log*
+/frontend/.pnp
+/frontend/.pnp.js
+/frontend/coverage
+/frontend/build
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+
+# Local development
+.env.local
+.env.*.local
+
+# Docker
+docker-compose.override.yml
+
+# Application specific
+/media/
+/uploads/
+/resumes/
+/static/
+tmp/
+
+# Data files that might contain sensitive information
+*.csv
+*.xls
+*.xlsx
+*.json
+*.yaml
+*.yml
+!package.json
+!package-lock.json
+!tsconfig.json
+!jest.config.js
+!.github/workflows/*.yml
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
