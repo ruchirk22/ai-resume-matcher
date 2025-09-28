@@ -59,19 +59,50 @@ function Dashboard() {
         const response = await api.getCandidatesForJd(selectedJd.id);
         // ensure resume_excerpt flows through
         const list = response.data.map(c => ({...c, resume_excerpt: c.resume_excerpt}));
-        setCandidates(list);
+  setCandidates(list);
+        // Build per-JD cache from returned analyses so we don't lose AI results when switching JDs
+        setAnalysisCache(prev => {
+          const copy = { ...prev };
+          const jdCache = copy[selectedJd.id] ? { ...copy[selectedJd.id] } : {};
+          // For any returned candidate that has been AI-analyzed (not Preliminary), store it
+          list.forEach(item => {
+            try {
+              if (item.match_rating && item.match_rating !== 'Preliminary') {
+                jdCache[item.resume.id] = {
+                  resume: item.resume,
+                  score: item.score,
+                  match_rating: item.match_rating,
+                  matched_skills: item.matched_skills || [],
+                  missing_skills: item.missing_skills || [],
+                  rationale: item.rationale || '',
+                  analyzed_at: item.analyzed_at,
+                  similarity: item.similarity,
+                  resume_excerpt: item.resume_excerpt
+                };
+              }
+            } catch (e) { /* defensive: ignore malformed items */ }
+          });
+          copy[selectedJd.id] = jdCache;
+          return copy;
+        });
         // If any candidate is still Preliminary then the full analysis is not current
         const anyPrelim = list.some(c => c.match_rating === 'Preliminary');
         setFullAnalyzed(!anyPrelim);
 
         // Fetch statuses and map into {resumeId: status}
         const { data: statusResp } = await api.getCandidateStatuses(selectedJd.id);
-        const map = {};
-        (statusResp.statuses || []).forEach(s => { map[s.resume_id] = s.status; });
+  const map = {};
+  (statusResp.statuses || []).forEach(s => { map[s.resume_id] = s.status; });
 
         // For any candidate without an explicit status, default to "New"
         list.forEach(c => { if(!map[c.resume.id]) map[c.resume.id] = "New"; });
         setStatusMap(map);
+        // Ensure analysis cache for this JD exists (don't pull in caches from other JDs)
+        setAnalysisCache(prev => {
+          const copy = { ...prev };
+          if (!copy[selectedJd.id]) copy[selectedJd.id] = {};
+          return copy;
+        });
       } catch (error) {
         console.error(`Failed to fetch candidates for JD ${selectedJd.id}`, error);
       } finally {
@@ -97,9 +128,14 @@ function Dashboard() {
         resume_excerpt: d.resume_excerpt
       }));
       setCandidates(list);
-      const newCache = {};
-      data.forEach(d => { newCache[d.resume.id] = d; });
-      setAnalysisCache(newCache);
+      // Store analyses scoped by JD
+      setAnalysisCache(prev => {
+        const copy = { ...prev };
+        const jdCache = {};
+        data.forEach(d => { jdCache[d.resume.id] = d; });
+        copy[selectedJd.id] = jdCache;
+        return copy;
+      });
       setFullAnalyzed(true);
       toast.success('Full AI analysis completed');
 
@@ -145,7 +181,9 @@ function Dashboard() {
       // merge into cache too
       setAnalysisCache(prev => {
         const copy = { ...prev };
-        data.forEach(d => { copy[d.resume.id] = d; });
+        const jdCache = copy[selectedJd.id] ? { ...copy[selectedJd.id] } : {};
+        data.forEach(d => { jdCache[d.resume.id] = d; });
+        copy[selectedJd.id] = jdCache;
         return copy;
       });
       toast.success(`Analyzed ${data.length} preliminary candidate(s)`);
@@ -545,11 +583,18 @@ const CandidateTable = ({ candidates, isLoading, jd, selectedCandidates, setSele
   const hasAnalyzed = candidates.some(c => c.match_rating !== 'Preliminary');
 
   const handleAnalyze = async (resumeId, force=false) => {
-    if (!force && analysisCache[resumeId]) return; // already have and not forcing
+    const jdCache = analysisCache[jd?.id] || {};
+    if (!force && jdCache[resumeId]) return; // already have and not forcing
     setIsAnalyzing(resumeId);
     try {
       const response = await api.analyzeCandidate(jd.id, resumeId, force);
-      setAnalysisCache(prev => ({ ...prev, [resumeId]: { ...response.data, resume_excerpt: response.data.resume_excerpt }}));
+      setAnalysisCache(prev => {
+        const copy = { ...prev };
+        const jdCacheLocal = copy[jd.id] ? { ...copy[jd.id] } : {};
+        jdCacheLocal[resumeId] = { ...response.data, resume_excerpt: response.data.resume_excerpt };
+        copy[jd.id] = jdCacheLocal;
+        return copy;
+      });
       if(force) toast.success('Re-analyzed candidate');
     } catch (error) {
       toast.error('AI analysis failed.');
@@ -562,7 +607,7 @@ const CandidateTable = ({ candidates, isLoading, jd, selectedCandidates, setSele
   const toggleRow = (resumeId) => {
     const newExpandedRow = expandedRow === resumeId ? null : resumeId;
     setExpandedRow(newExpandedRow);
-    if (newExpandedRow && !analysisCache[newExpandedRow]) {
+    if (newExpandedRow && !(analysisCache[jd.id] && analysisCache[jd.id][newExpandedRow])) {
       handleAnalyze(newExpandedRow);
     }
   };
@@ -688,7 +733,7 @@ const CandidateTable = ({ candidates, isLoading, jd, selectedCandidates, setSele
                       <td colSpan="7" className="p-4 bg-slate-50/50">
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                           <AnalysisDetail 
-                            analysis={analysisCache[rid]} 
+                            analysis={analysisCache[jd.id] ? analysisCache[jd.id][rid] : null} 
                             isLoading={isAnalyzing === rid}
                             onForce={() => handleAnalyze(rid, true)}
                           />
