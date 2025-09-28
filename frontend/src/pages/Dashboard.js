@@ -1,5 +1,5 @@
 // frontend/src/pages/Dashboard.js
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../services/api';
 import Modal from '../components/Modal';
@@ -18,6 +18,9 @@ function Dashboard() {
   const [candidates, setCandidates] = useState([]);
   const [fullAnalyzed, setFullAnalyzed] = useState(false);
   const [analysisCache, setAnalysisCache] = useState({});
+  // Keep a ref of analysisCache so callbacks (that we don't want to re-create)
+  // can access the latest cache without adding it to dependency lists.
+  const analysisCacheRef = useRef(analysisCache);
   const [isLoading, setIsLoading] = useState(true);
   const [isJdModalOpen, setIsJdModalOpen] = useState(false);
   const [isResumeModalOpen, setIsResumeModalOpen] = useState(false);
@@ -53,6 +56,9 @@ function Dashboard() {
   // Whenever analysisCache or selectedJd changes, ensure candidate list reflects any
   // cached AI analyses for the selected JD (this prevents transient reversion to Preliminary)
   useEffect(() => {
+    // keep ref in sync
+    analysisCacheRef.current = analysisCache;
+
     if (!selectedJd) return;
     const jdCache = analysisCache[selectedJd.id] || {};
     if (!jdCache || Object.keys(jdCache).length === 0) return;
@@ -92,8 +98,9 @@ function Dashboard() {
         // cached AI results override any 'Preliminary' returned by the server.
         setCandidates(prev => {
           const copyList = list.map(item => ({ ...item }));
-          const jdCache = analysisCache[selectedJd.id] || {};
-          if (jdCache) {
+          // read latest cache from ref to avoid stale closure problems
+          const jdCache = analysisCacheRef.current?.[selectedJd.id] || {};
+          if (jdCache && Object.keys(jdCache).length > 0) {
             for (let i = 0; i < copyList.length; i++) {
               const rid = copyList[i].resume?.id;
               if (rid && jdCache[rid]) {
