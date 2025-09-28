@@ -3,6 +3,15 @@ import asyncio
 import datetime
 import math
 from typing import List, Dict, Any
+import re
+from typing import Tuple
+from collections import Counter
+
+# --- NEW imports for offline preliminary scoring ---
+from rapidfuzz import fuzz
+from sklearn.feature_extraction.text import TfidfVectorizer
+# alias sklearn cosine to avoid overriding the existing embedding cosine_similarity helper
+from sklearn.metrics.pairwise import cosine_similarity as _sklearn_cosine
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,31 +75,150 @@ def calculate_candidate_match(resume: models.Resume, db_jd: models.JobDescriptio
                 resume_excerpt=(resume.text or "")[:300]
             )
 
-    # No AI analysis yet -> attempt a lightweight heuristic.
-    jd_required = db_jd.required_skills or []
+    # No AI analysis yet -> compute our improved offline preliminary score using the
+    # shared helper. This returns a dict with score, matched_skills, missing_skills, etc.
+    jd_text = getattr(db_jd, "text", "") or getattr(db_jd, "jd_text", "") or ""
+    jd_req = db_jd.required_skills or []
     jd_nice = db_jd.nice_to_have_skills or []
-    parsed_skills = []
-    if resume.parsed_json and isinstance(resume.parsed_json, dict):
-        parsed_skills = [s for s in (resume.parsed_json.get("skills") or []) if isinstance(s, str)]
-    lower_parsed = {s.lower() for s in parsed_skills}
-    required_lower = {s.lower() for s in jd_required}
-    nice_lower = {s.lower() for s in jd_nice}
-    matched_required = [s for s in jd_required if s.lower() in lower_parsed]
-    matched_nice = [s for s in jd_nice if s.lower() in lower_parsed]
-    missing_required = [s for s in jd_required if s.lower() not in lower_parsed]
-    required_score = (len(matched_required) / max(len(required_lower), 1)) * 90 if required_lower else 0
-    nice_score = (len(matched_nice) / max(len(nice_lower), 1)) * 10 if nice_lower else 0
-    prelim_total = round(required_score + nice_score, 2)
+    prelim = _compute_prelim_score(jd_text, jd_req, jd_nice, resume.text or "")
+
     return schemas.CandidateMatch(
         resume=resume,
-        score=prelim_total,
-        match_rating="Preliminary",
-        matched_skills=matched_required + matched_nice,
-        missing_skills=missing_required,
-        analyzed_at=None,
-        similarity=None,
-        resume_excerpt=(resume.text or "")[:300]
+        score=prelim.get("score", 0.0),
+        match_rating=prelim.get("match_rating", "Preliminary"),
+        matched_skills=prelim.get("matched_skills", []) or [],
+        missing_skills=prelim.get("missing_skills", []) or [],
+        analyzed_at=prelim.get("analyzed_at"),
+        similarity=prelim.get("similarity"),
+        resume_excerpt=prelim.get("resume_excerpt", (resume.text or "")[:300])
     )
+
+# ========== Preliminary scoring helpers (offline) ==========
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_\-+/#.]*")
+YEARS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(\+?\s*)?(?:years?|yrs)\b", re.IGNORECASE)
+
+def _normalize_text(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("\x00", " ")
+    return " ".join(_WORD_RE.findall(s.lower()))
+
+def _extract_years_of_experience(text: str) -> float:
+    years = 0.0
+    for m in YEARS_RE.finditer(text or ""):
+        try:
+            val = float(m.group(1))
+            if val > years:
+                years = val
+        except:
+            continue
+    return min(years, 20.0)
+
+def _list_from_field(val) -> List[str]:
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return [str(x).strip() for x in val if str(x).strip()]
+    if isinstance(val, str):
+        s = val.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                import json
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception:
+                pass
+        return [x.strip() for x in val.split(",") if x.strip()]
+    return []
+
+def _dedup_keep_order(xs: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in xs:
+        k = x.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
+
+def _fuzzy_contains(haystack: str, needle: str, threshold: int = 85) -> bool:
+    if not needle:
+        return False
+    if needle.lower() in haystack:
+        return True
+    score = fuzz.partial_ratio(needle.lower(), haystack)
+    return score >= threshold
+
+def _match_skills(resume_text_norm: str, skills: List[str], thresh: int) -> Tuple[List[str], List[str]]:
+    matched, missing = [], []
+    for sk in skills:
+        if _fuzzy_contains(resume_text_norm, sk, thresh):
+            matched.append(sk)
+        else:
+            missing.append(sk)
+    return matched, missing
+
+def _tfidf_cosine(jd_text: str, resume_text: str) -> float:
+    a = _normalize_text(jd_text)
+    b = _normalize_text(resume_text)
+    if not a or not b:
+        return 0.0
+    vec = TfidfVectorizer(min_df=1, ngram_range=(1,2))
+    mat = vec.fit_transform([a, b])
+    try:
+        sim = _sklearn_cosine(mat[0:1], mat[1:2])[0][0]
+        return max(0.0, min(1.0, float(sim)))
+    except Exception:
+        return 0.0
+
+def _get_excerpt(text: str, length: int = 600) -> str:
+    if not text:
+        return ""
+    t = " ".join(text.split())
+    return t[:length]
+
+def _compute_prelim_score(jd_text: str, jd_req_skills: List[str], jd_nice_skills: List[str], resume_text: str) -> Dict[str, Any]:
+    """
+    Weighted blend (fully offline):
+      - Required skills coverage: 55%
+      - Nice-to-have skills coverage: 20%
+      - TF-IDF cosine similarity: 20%
+      - Years of experience regex heuristic: 5% (capped at 10 for scoring)
+    """
+    resume_text_norm = _normalize_text(resume_text)
+    req = _dedup_keep_order([s for s in jd_req_skills if s])
+    nice = _dedup_keep_order([s for s in jd_nice_skills if s])
+
+    matched_req, missing_req = _match_skills(resume_text_norm, req, 85)
+    matched_nice, _ = _match_skills(resume_text_norm, nice, 85)
+
+    req_cov = (len(matched_req) / len(req)) if len(req) > 0 else 0.0
+    nice_cov = (len(matched_nice) / max(1, len(nice)))
+    tfidf = _tfidf_cosine(jd_text or "", resume_text or "")
+
+    years = _extract_years_of_experience(resume_text)
+    exp_factor = min(years / 10.0, 1.0)
+
+    score = (
+        0.55 * req_cov +
+        0.20 * nice_cov +
+        0.20 * tfidf +
+        0.05 * exp_factor
+    ) * 100.0
+
+    return {
+        "score": float(round(score, 2)),
+        "similarity": float(round(tfidf, 4)),
+        "matched_skills": matched_req,
+        "missing_skills": missing_req,
+        "matched_nice_to_have": matched_nice,
+        "resume_excerpt": _get_excerpt(resume_text, 600),
+        "match_rating": "Preliminary",
+        "rationale": None,
+        "analyzed_at": None,
+    }
 
 # --- Helper: Per-JD AI Analysis Cache on Resume ---
 
@@ -277,16 +405,20 @@ def get_candidate_matches(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Endpoint for the main candidate list view. Relies entirely on the ranking engine."""
+    """Endpoint for the main candidate list view. Uses an offline preliminary scoring blend.
+
+    Implementation replaced with TF-IDF + fuzzy-skill matching blend. Returns the same
+    response model as before. This keeps the decorator and signature unchanged.
+    """
     db_jd = db.query(models.JobDescription).filter_by(id=jd_id, user_id=current_user.id).first()
     if not db_jd:
         raise HTTPException(status_code=404, detail="Job Description not found")
 
+    # Use the unified ranking engine which now uses the improved offline score when
+    # AI analysis for this resume+JD is not present.
     all_resumes = db.query(models.Resume).filter_by(user_id=current_user.id).all()
-    
     results = [calculate_candidate_match(resume, db_jd) for resume in all_resumes]
     valid_results = [res for res in results if res is not None]
-    
     valid_results.sort(key=lambda x: x.score, reverse=True)
     return valid_results
 
@@ -398,76 +530,62 @@ async def analyze_preliminary_only(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """Enhanced heuristic pass for resumes that have NO stored AI analysis for this JD.
-
-    Instead of invoking the full AI model (which would upgrade their rating), this endpoint:
-      * Recomputes the base heuristic (required 90% / nice 10%)
-      * Adds a small frequency-based bonus for repeated required skill mentions (capped)
-      * Keeps match_rating='Preliminary' so recruiters can still distinguish AI vs heuristic
-      * Does NOT persist an AI analysis entry, so a later full analysis will still run the model
-
-    Rationale encourages upgrading via full analysis for final scoring & explanation.
-    """
+    # This endpoint analyzes only the resumes that do NOT yet have a per-JD AI
+    # analysis stored under resume.analysis_results['jd_<id>'].
+    # - For each missing resume: call ensure_analysis_for_jd(...) which will run AI
+    #   and persist the result into resume.analysis_results[jd_<id>] (unless AI fails).
+    # - For already-analyzed resumes: leave them untouched.
+    # Finally return a full list of DetailedCandidate objects (mix of AI and preliminary).
     db_jd = db.query(models.JobDescription).filter_by(id=jd_id, user_id=current_user.id).first()
     if not db_jd:
         raise HTTPException(status_code=404, detail="Job Description not found")
+
     resumes = db.query(models.Resume).filter_by(user_id=current_user.id).all()
     key = f"jd_{jd_id}"
-    prelim_targets = []
-    for r in resumes:
-        if not (isinstance(r.analysis_results, dict) and key in (r.analysis_results or {})):
-            prelim_targets.append(r)
-    if not prelim_targets:
-        return []
-    results: List[schemas.DetailedCandidate] = []
-    # Decide whether to upgrade some to AI automatically (batch in moderation)
-    # We'll run AI for top-N heuristic by preliminary score up to 5 to accelerate workflow.
-    scored_prelims: List[tuple[float, models.Resume, schemas.CandidateMatch]] = []
+
+    # Find resumes that are missing AI analysis for this JD
+    prelim_targets = [r for r in resumes if not (isinstance(r.analysis_results, dict) and key in (r.analysis_results or {}))]
+
+    # Run AI analysis for missing ones (persisted by ensure_analysis_for_jd)
     for r in prelim_targets:
-        base = calculate_candidate_match(r, db_jd)
-        scored_prelims.append((base.score, r, base))
-    scored_prelims.sort(key=lambda t: t[0], reverse=True)
-    # Top 5 get AI analysis (unless too low similarity) others remain heuristic
-    ai_targets = {res.id for _, res, _ in scored_prelims[:5]}
-    for score_val, res_obj, base in scored_prelims:
-        # similarity check
-        if res_obj.embedding is not None and db_jd.embedding is not None:
-            sim = cosine_similarity(res_obj.embedding, db_jd.embedding)
+        try:
+            await ensure_analysis_for_jd(r, db_jd, db, force=False, skip_ai=False)
+        except Exception as e:
+            # If AI fails, we do not overwrite prior state; we simply log and continue
+            print(f"AI analysis failed for resume {r.id}: {e}")
+
+    # Build the response: prefer persisted AI analysis if available, else compute preliminary
+    out: List[schemas.DetailedCandidate] = []
+    for r in resumes:
+        if isinstance(r.analysis_results, dict) and key in r.analysis_results:
+            a = r.analysis_results[key]
+            out.append(schemas.DetailedCandidate(
+                resume=r,
+                score=a.get("score", 0.0),
+                match_rating=a.get("match_rating", "Weak"),
+                matched_skills=a.get("matched_skills", []),
+                missing_skills=a.get("missing_skills", []),
+                rationale=a.get("rationale", ""),
+                analyzed_at=a.get("analyzed_at"),
+                similarity=a.get("similarity"),
+                resume_excerpt=(r.text or "")[:300]
+            ))
         else:
-            sim = 0.0
-        run_ai = res_obj.id in ai_targets and sim >= 0.10
-        if run_ai:
-            analysis = await ensure_analysis_for_jd(res_obj, db_jd, db, force=False)
-            results.append(
-                schemas.DetailedCandidate(
-                    resume=res_obj,
-                    score=analysis["score"],
-                    match_rating=analysis["match_rating"],
-                    matched_skills=analysis["matched_skills"],
-                    missing_skills=analysis["missing_skills"],
-                    rationale=analysis.get("rationale", "No rationale."),
-                    analyzed_at=analysis.get("analyzed_at"),
-                    similarity=analysis.get("similarity"),
-                    resume_excerpt=base.resume_excerpt,
-                )
-            )
-        else:
-            results.append(
-                schemas.DetailedCandidate(
-                    resume=res_obj,
-                    score=base.score,
-                    match_rating="Preliminary",
-                    matched_skills=base.matched_skills,
-                    missing_skills=base.missing_skills,
-                    rationale="Heuristic only (awaiting full analysis).",
-                    analyzed_at=None,
-                    similarity=round(sim,4) if isinstance(sim, float) else None,
-                    resume_excerpt=base.resume_excerpt,
-                )
-            )
-    # Sort like other lists
-    results.sort(key=lambda c: c.score, reverse=True)
-    return results
+            prelim = calculate_candidate_match(r, db_jd)
+            out.append(schemas.DetailedCandidate(
+                resume=r,
+                score=prelim.score,
+                match_rating=prelim.match_rating,
+                matched_skills=prelim.matched_skills,
+                missing_skills=prelim.missing_skills,
+                rationale="Heuristic only (awaiting full analysis).",
+                analyzed_at=prelim.analyzed_at,
+                similarity=prelim.similarity,
+                resume_excerpt=prelim.resume_excerpt
+            ))
+
+    out.sort(key=lambda c: c.score, reverse=True)
+    return out
 
 @app.get("/candidates/status/{jd_id}", response_model=schemas.JDAnalysisStatus, tags=["candidates"])
 def jd_analysis_status(

@@ -21,3 +21,4 @@ python-dotenv
 PyMuPDF
 python-docx
 requests
+rapidfuzz

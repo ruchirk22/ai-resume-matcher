@@ -60,6 +60,9 @@ function Dashboard() {
         // ensure resume_excerpt flows through
         const list = response.data.map(c => ({...c, resume_excerpt: c.resume_excerpt}));
         setCandidates(list);
+        // If any candidate is still Preliminary then the full analysis is not current
+        const anyPrelim = list.some(c => c.match_rating === 'Preliminary');
+        setFullAnalyzed(!anyPrelim);
 
         // Fetch statuses and map into {resumeId: status}
         const { data: statusResp } = await api.getCandidateStatuses(selectedJd.id);
@@ -146,6 +149,10 @@ function Dashboard() {
         return copy;
       });
       toast.success(`Analyzed ${data.length} preliminary candidate(s)`);
+
+      // Update fullAnalyzed flag: if no one is Preliminary after merge, mark fullAnalyzed
+      const anyPrelimAfter = merged.some(c => c.match_rating === 'Preliminary');
+      setFullAnalyzed(!anyPrelimAfter);
 
       // Ensure statuses present for new candidates
       setStatusMap(prev => {
@@ -472,34 +479,16 @@ const FilterBar = ({ activeFilters, setActiveFilters, onRefresh, jd }) => {
             })}
           </div>
         </div>
-        {/* (Status moved to second row for improved UX) */}
 
-        <div className="flex items-center gap-1 text-xs">
-          <span className="text-slate-600">Min Score</span>
-          <input type="number" min={0} max={100} value={activeFilters.minScore} onChange={handleInput('minScore')} className="w-16 border rounded px-1 py-0.5 text-xs" />
-        </div>
-        <div className="flex items-center gap-1 text-xs">
-          <span className="text-slate-600">Sort</span>
-          <select value={`${activeFilters.sortKey}:${activeFilters.sortDir}`} onChange={(e)=>{
-              const [k,d]= e.target.value.split(':');
-              setActiveFilters(prev => ({...prev, sortKey: k, sortDir: d}));
-            }} className="text-xs border rounded px-1 py-0.5 bg-white">
-            <option value="score:desc">Score ↓</option>
-            <option value="score:asc">Score ↑</option>
-            <option value="name:asc">Name A-Z</option>
-            <option value="name:desc">Name Z-A</option>
-            <option value="rating:asc">Rating A-Z</option>
-            <option value="rating:desc">Rating Z-A</option>
-            <option value="status:asc">Status A-Z</option>
-            <option value="status:desc">Status Z-A</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-3 text-xs">
-          <label className="flex items-center gap-1 text-slate-600"><input type="checkbox" checked={activeFilters.hidePreliminary} onChange={handleInput('hidePreliminary')} /> Hide Preliminary</label>
-        </div>
-        <div className="flex items-center gap-2 ml-auto">
-          <button onClick={onRefresh} className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 rounded" title="Refresh from server"><RotateCw size={14} /></button>
-          <button onClick={()=> setActiveFilters({ratings:['all'], statuses:['all'], hidePreliminary:false, minScore:0, textQuery:'', sortKey:'score', sortDir:'desc'})} className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 rounded text-xs" title="Reset filters">Reset</button>
+        {/* Group: Min Score + Hide Preliminary (kept together for compact scanning) */}
+        <div className="flex items-center gap-4 ml-4">
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-slate-600">Min Score</span>
+            <input type="number" min={0} max={100} value={activeFilters.minScore} onChange={handleInput('minScore')} className="w-16 border rounded px-1 py-0.5 text-xs" />
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            <label className="flex items-center gap-1 text-slate-600"><input type="checkbox" checked={activeFilters.hidePreliminary} onChange={handleInput('hidePreliminary')} /> Hide Preliminary</label>
+          </div>
         </div>
       </div>
       {/* Row 2 */}
@@ -518,7 +507,30 @@ const FilterBar = ({ activeFilters, setActiveFilters, onRefresh, jd }) => {
           </div>
         </div>
 
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-600">Sort</span>
+          <select value={`${activeFilters.sortKey}:${activeFilters.sortDir}`} onChange={(e)=>{
+              const [k,d]= e.target.value.split(':');
+              setActiveFilters(prev => ({...prev, sortKey: k, sortDir: d}));
+            }} className="text-xs border rounded px-1 py-0.5 bg-white">
+            <option value="score:desc">Score ↓</option>
+            <option value="score:asc">Score ↑</option>
+            <option value="name:asc">Name A-Z</option>
+            <option value="name:desc">Name Z-A</option>
+            <option value="rating:asc">Rating A-Z</option>
+            <option value="rating:desc">Rating Z-A</option>
+            <option value="status:asc">Status A-Z</option>
+            <option value="status:desc">Status Z-A</option>
+          </select>
+        </div>
+
         <input type="text" value={activeFilters.textQuery} onChange={handleInput('textQuery')} placeholder="Search name / resume / JD" className="flex-1 min-w-[240px] border rounded px-3 py-1 text-xs bg-white" />
+
+        <div className="flex items-center gap-2">
+          <button onClick={onRefresh} className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 rounded" title="Refresh from server"><RotateCw size={14} /></button>
+          <button onClick={()=> setActiveFilters({ratings:['all'], statuses:['all'], hidePreliminary:false, minScore:0, textQuery:'', sortKey:'score', sortDir:'desc'})} className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-200 rounded text-xs" title="Reset filters">Reset</button>
+        </div>
+
         {jd && <p className="text-[10px] text-slate-500 ml-auto">JD: {jd.title} • {jd.required_skills?.length || 0} req / {jd.nice_to_have_skills?.length || 0} nice</p>}
       </div>
     </div>
@@ -530,6 +542,7 @@ const CandidateTable = ({ candidates, isLoading, jd, selectedCandidates, setSele
   const [expandedRow, setExpandedRow] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(null); // resume ID
   const hasPreliminary = candidates.some(c => c.match_rating === 'Preliminary');
+  const hasAnalyzed = candidates.some(c => c.match_rating !== 'Preliminary');
 
   const handleAnalyze = async (resumeId, force=false) => {
     if (!force && analysisCache[resumeId]) return; // already have and not forcing
@@ -597,7 +610,7 @@ const CandidateTable = ({ candidates, isLoading, jd, selectedCandidates, setSele
     <>
       <div className="flex items-center gap-3 p-3 bg-white border-b flex-wrap">
         <button onClick={() => runFullAnalysis(false)} disabled={isLoading || fullAnalyzed || candidates.length===0} className="px-3 py-1.5 rounded bg-indigo-600 text-white text-sm disabled:bg-indigo-300 disabled:cursor-not-allowed" title={candidates.length===0 ? 'Upload resumes first' : ''}>{fullAnalyzed ? 'Analysis Ready' : 'Run Full Analysis'}</button>
-        {fullAnalyzed && <>
+        {hasAnalyzed && <>
           <button onClick={() => runFullAnalysis(true)} disabled={isLoading} className="px-3 py-1.5 rounded bg-slate-200 text-sm disabled:opacity-50" title="Re-run AI for all">Re-run (Force)</button>
           {hasPreliminary && <button onClick={analyzePreliminaryOnly} disabled={isLoading} className="px-3 py-1.5 rounded bg-emerald-600 text-white text-sm disabled:opacity-50" title="Analyze only candidates still Preliminary">Analyze Preliminary</button>}
         </>}
