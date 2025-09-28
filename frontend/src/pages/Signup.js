@@ -1,27 +1,30 @@
+// frontend/src/pages/Signup.js
 import React, { useState } from 'react';
-import { signup } from '../services/api.js'; // Corrected import path
+import { signup } from '../services/api.js';
 import { Link, useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 
 function Signup() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
-    setMessage('');
+    setIsLoading(true);
     try {
       await signup(email, password);
-      setMessage('Signup successful! Please log in.');
-      setTimeout(() => navigate('/login'), 2000);
+      toast.success('Signup successful! Please log in.');
+      navigate('/login');
     } catch (err) {
-      setError(err.response?.data?.detail || 'An error occurred during signup.');
+      // Error handled by global interceptor
+    } finally {
+      setIsLoading(false);
     }
   };
 
+  // ... (JSX is similar, just add loading state to button)
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-100">
       <div className="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
@@ -33,6 +36,7 @@ function Signup() {
               id="email"
               name="email"
               type="email"
+              autoComplete="email"
               required
               className="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
               value={email}
@@ -45,20 +49,20 @@ function Signup() {
               id="password"
               name="password"
               type="password"
+              autoComplete="new-password"
               required
               className="w-full px-3 py-2 mt-1 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {message && <p className="text-sm text-green-600">{message}</p>}
           <div>
             <button
               type="submit"
-              className="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              disabled={isLoading}
+              className="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 border border-transparent rounded-md shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:bg-indigo-400"
             >
-              Sign up
+              {isLoading ? 'Signing up...' : 'Sign up'}
             </button>
           </div>
         </form>
@@ -74,4 +78,3 @@ function Signup() {
 }
 
 export default Signup;
-

@@ -1,3 +1,4 @@
+# backend/app/security.py
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -7,12 +8,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Load secret key from .env file
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = os.getenv("JWT_SECRET")
+if not SECRET_KEY:
+    raise ValueError("JWT_SECRET environment variable not set")
 
-# Setup password hashing
+ALGORITHM = "HS256"
+# Set token to expire in 7 days
+ACCESS_TOKEN_EXPIRE_DAYS = 7
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def verify_password(plain_password, hashed_password):
@@ -26,7 +29,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+        expire = datetime.now(timezone.utc) + timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt

@@ -1,24 +1,31 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, JSON, Text
+# backend/app/models.py
+from sqlalchemy import Column, Integer, String, ForeignKey, JSON, Text, DateTime, func
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 from .database import Base
 
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
     jds = relationship("JobDescription", back_populates="owner", cascade="all, delete-orphan")
     resumes = relationship("Resume", back_populates="owner", cascade="all, delete-orphan")
 
 class JobDescription(Base):
     __tablename__ = "job_descriptions"
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
+    title = Column(String, index=True, nullable=False)
     text = Column(Text)
-    weaviate_id = Column(String, unique=True)
+    embedding = Column(Vector(768)) # Gemini embedding size
+    required_skills = Column(JSON)
+    nice_to_have_skills = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
     user_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="jds")
-    analyses = relationship("Analysis", back_populates="jd", cascade="all, delete-orphan")
 
 class Resume(Base):
     __tablename__ = "resumes"
@@ -26,27 +33,15 @@ class Resume(Base):
     candidate_name = Column(String, index=True)
     text = Column(Text)
     parsed_json = Column(JSON)
-    weaviate_id = Column(String, unique=True)
-    content_hash = Column(String, unique=True) # For duplicate checking
+    embedding = Column(Vector(768)) # Gemini embedding size
+    content_hash = Column(String, unique=True)
+    analysis_results = Column(JSON) # Storing AI analysis here
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
     user_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="resumes")
-    analyses = relationship("Analysis", back_populates="resume", cascade="all, delete-orphan")
 
-# NEW: The "memory" of our application
-class Analysis(Base):
-    __tablename__ = "analysis"
-    id = Column(Integer, primary_key=True, index=True)
-    resume_id = Column(Integer, ForeignKey("resumes.id"))
-    jd_id = Column(Integer, ForeignKey("job_descriptions.id"))
-    
-    # The stored results from the AI
-    match_percentage = Column(Integer)
-    rationale = Column(Text)
-    matched_skills = Column(JSON)
-    missing_skills = Column(JSON)
-    category = Column(String)
-    
-    # Relationships to link back
-    resume = relationship("Resume", back_populates="analyses")
-    jd = relationship("JobDescription", back_populates="analyses")
+    file_path = Column(String, nullable=True)            # NEW: absolute or relative path to stored file
+    original_filename = Column(String, nullable=True)    # NEW: original client filename
+    mime_type = Column(String, nullable=True)            # NEW: content-type hint (e.g., application/pdf)
 
