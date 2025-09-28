@@ -50,6 +50,35 @@ function Dashboard() {
     }
   }, [selectedJd]);
 
+  // Whenever analysisCache or selectedJd changes, ensure candidate list reflects any
+  // cached AI analyses for the selected JD (this prevents transient reversion to Preliminary)
+  useEffect(() => {
+    if (!selectedJd) return;
+    const jdCache = analysisCache[selectedJd.id] || {};
+    if (!jdCache || Object.keys(jdCache).length === 0) return;
+    setCandidates(prev => {
+      if (!prev || prev.length === 0) return prev;
+      return prev.map(item => {
+        const rid = item.resume?.id;
+        if (rid && jdCache[rid]) {
+          const cached = jdCache[rid];
+          return {
+            ...item,
+            score: cached.score ?? item.score,
+            match_rating: cached.match_rating ?? item.match_rating,
+            matched_skills: cached.matched_skills ?? item.matched_skills,
+            missing_skills: cached.missing_skills ?? item.missing_skills,
+            rationale: cached.rationale ?? item.rationale,
+            analyzed_at: cached.analyzed_at ?? item.analyzed_at,
+            similarity: cached.similarity ?? item.similarity,
+            resume_excerpt: cached.resume_excerpt ?? item.resume_excerpt,
+          };
+        }
+        return item;
+      });
+    });
+  }, [selectedJd, analysisCache]);
+
   const fetchCandidatesForJd = useCallback(async () => {
     if (selectedJd) {
       setIsLoading(true);
@@ -59,7 +88,33 @@ function Dashboard() {
         const response = await api.getCandidatesForJd(selectedJd.id);
         // ensure resume_excerpt flows through
         const list = response.data.map(c => ({...c, resume_excerpt: c.resume_excerpt}));
-  setCandidates(list);
+        // If we already have cached analyses for this JD (in memory), merge them so
+        // cached AI results override any 'Preliminary' returned by the server.
+        setCandidates(prev => {
+          const copyList = list.map(item => ({ ...item }));
+          const jdCache = analysisCache[selectedJd.id] || {};
+          if (jdCache) {
+            for (let i = 0; i < copyList.length; i++) {
+              const rid = copyList[i].resume?.id;
+              if (rid && jdCache[rid]) {
+                // overlay the cached AI analysis fields
+                const cached = jdCache[rid];
+                copyList[i] = {
+                  ...copyList[i],
+                  score: cached.score ?? copyList[i].score,
+                  match_rating: cached.match_rating ?? copyList[i].match_rating,
+                  matched_skills: cached.matched_skills ?? copyList[i].matched_skills,
+                  missing_skills: cached.missing_skills ?? copyList[i].missing_skills,
+                  rationale: cached.rationale ?? copyList[i].rationale,
+                  analyzed_at: cached.analyzed_at ?? copyList[i].analyzed_at,
+                  similarity: cached.similarity ?? copyList[i].similarity,
+                  resume_excerpt: cached.resume_excerpt ?? copyList[i].resume_excerpt
+                };
+              }
+            }
+          }
+          return copyList;
+        });
         // Build per-JD cache from returned analyses so we don't lose AI results when switching JDs
         setAnalysisCache(prev => {
           const copy = { ...prev };
@@ -97,12 +152,6 @@ function Dashboard() {
         // For any candidate without an explicit status, default to "New"
         list.forEach(c => { if(!map[c.resume.id]) map[c.resume.id] = "New"; });
         setStatusMap(map);
-        // Ensure analysis cache for this JD exists (don't pull in caches from other JDs)
-        setAnalysisCache(prev => {
-          const copy = { ...prev };
-          if (!copy[selectedJd.id]) copy[selectedJd.id] = {};
-          return copy;
-        });
       } catch (error) {
         console.error(`Failed to fetch candidates for JD ${selectedJd.id}`, error);
       } finally {

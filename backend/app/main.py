@@ -391,6 +391,11 @@ async def ensure_analysis_for_jd(
     try:
         db.add(resume)
         db.commit()
+        # Debug/log: confirm persistence for easier troubleshooting
+        try:
+            print(f"Persisted analysis for resume {resume.id} jd {db_jd.id}: rating={analysis_obj.get('match_rating')} score={analysis_obj.get('score')}")
+        except Exception:
+            pass
     except Exception as e:
         print(f"Failed to persist analysis for resume {resume.id}: {e}")
         db.rollback()

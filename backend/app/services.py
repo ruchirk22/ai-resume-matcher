@@ -28,9 +28,12 @@ EMBEDDING_FALLBACKS = [
 
 PRIMARY_GENERATION_MODEL = "gemini-2.0-flash"
 GENERATION_FALLBACKS = [
-    "gemini-2.0-flash",  # primary
-    "gemini-1.5-flash",  # widely available free tier
-    "gemini-1.5-pro"      # slower but more capable
+    "gemini-2.0-flash",  # primary (kept first for clarity)
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
 ]
 
 cache: Dict[str, Any] = {}
