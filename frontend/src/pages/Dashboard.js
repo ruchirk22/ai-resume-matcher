@@ -16,7 +16,9 @@ function Dashboard() {
   const [jds, setJds] = useState([]);
   const [selectedJd, setSelectedJd] = useState(null);
   const [candidates, setCandidates] = useState([]);
-  const [fullAnalyzed, setFullAnalyzed] = useState(false);
+  // track which JDs have had a full analysis run (so Run Full Analysis is only
+  // enabled once per JD). Keyed by jdId -> boolean
+  const [fullAnalyzedMap, setFullAnalyzedMap] = useState({});
   const [analysisCache, setAnalysisCache] = useState({});
   // Keep a ref of analysisCache so callbacks (that we don't want to re-create)
   // can access the latest cache without adding it to dependency lists.
@@ -147,9 +149,10 @@ function Dashboard() {
           copy[selectedJd.id] = jdCache;
           return copy;
         });
-        // If any candidate is still Preliminary then the full analysis is not current
-        const anyPrelim = list.some(c => c.match_rating === 'Preliminary');
-        setFullAnalyzed(!anyPrelim);
+  // Note: we intentionally DO NOT reset the per-JD "full analyzed" flag
+  // based on incoming data here. The button should remain disabled after
+  // a manual Full Analysis run for that JD. That flag is only set when
+  // runFullAnalysis completes successfully.
 
         // Fetch statuses and map into {resumeId: status}
         const { data: statusResp } = await api.getCandidateStatuses(selectedJd.id);
@@ -192,7 +195,8 @@ function Dashboard() {
         copy[selectedJd.id] = jdCache;
         return copy;
       });
-      setFullAnalyzed(true);
+  // mark this JD as having completed a full analysis (disable the one-shot button)
+  setFullAnalyzedMap(prev => ({ ...prev, [selectedJd.id]: true }));
       toast.success('Full AI analysis completed');
 
       // Ensure status map at least has "New" for all
@@ -244,9 +248,8 @@ function Dashboard() {
       });
       toast.success(`Analyzed ${data.length} preliminary candidate(s)`);
 
-      // Update fullAnalyzed flag: if no one is Preliminary after merge, mark fullAnalyzed
-      const anyPrelimAfter = merged.some(c => c.match_rating === 'Preliminary');
-      setFullAnalyzed(!anyPrelimAfter);
+  // We intentionally do not change the one-shot per-JD full-analysis flag here.
+  // That flag is controlled only by an explicit Run Full Analysis action.
 
       // Ensure statuses present for new candidates
       setStatusMap(prev => {
@@ -271,7 +274,7 @@ function Dashboard() {
   }, [selectedJd, fetchCandidatesForJd]);
 
   const handleLogout = () => {
-    sessionStorage.removeItem('token');
+    localStorage.removeItem('token');
     toast.success("Logged out");
     navigate('/login');
   };
@@ -433,13 +436,13 @@ function Dashboard() {
                       onRefresh={fetchCandidatesForJd} 
                       jd={selectedJd} 
                     />
-                    <CandidateTable 
+            <CandidateTable 
                       candidates={filteredCandidates} 
                       isLoading={isLoading}
                       jd={selectedJd}
                       selectedCandidates={selectedCandidates}
                       setSelectedCandidates={setSelectedCandidates}
-                      fullAnalyzed={fullAnalyzed}
+                      fullAnalyzed={fullAnalyzedMap[selectedJd.id] || false}
                       runFullAnalysis={runFullAnalysis}
                       analysisCache={analysisCache}
                       setAnalysisCache={setAnalysisCache}
@@ -611,10 +614,6 @@ const FilterBar = ({ activeFilters, setActiveFilters, onRefresh, jd }) => {
             <option value="score:asc">Score ↑</option>
             <option value="name:asc">Name A-Z</option>
             <option value="name:desc">Name Z-A</option>
-            <option value="rating:asc">Rating A-Z</option>
-            <option value="rating:desc">Rating Z-A</option>
-            <option value="status:asc">Status A-Z</option>
-            <option value="status:desc">Status Z-A</option>
           </select>
         </div>
 
@@ -1055,10 +1054,33 @@ const ResumeModal = ({ isOpen, onClose, onUploadSuccess }) => {
     setIsUploading(true);
     try {
       const response = await api.bulkUploadResumes(Array.from(files));
-      toast.success("Resume upload started!");
-      onUploadSuccess(response.data.job_id);
-      onClose();
-      setFiles([]);
+      // Backend may return duplicates array and possibly no job_id if nothing new
+      const { job_id, duplicates } = response.data;
+      if (duplicates && duplicates.length > 0 && !job_id) {
+        // Only duplicates were detected; notify user and do NOT trigger job polling.
+        toast((t) => (
+          <div className="flex flex-col">
+            <div className="font-semibold">Duplicate resumes detected</div>
+            <div className="text-sm">{duplicates.join(', ')}</div>
+          </div>
+        ));
+        // Close modal and clear selected files, but don't call onUploadSuccess(null)
+        onClose();
+        setFiles([]);
+        return;
+      }
+
+      if (job_id) {
+        toast.success("Resume upload started!");
+        onUploadSuccess(job_id);
+        onClose();
+        setFiles([]);
+      } else {
+        // No job_id and no duplicates -> something went wrong reading files
+        toast.error('No new resumes were uploaded (duplicates or read errors).');
+        onClose();
+        setFiles([]);
+      }
     } catch(e) {
       // Error handled by global interceptor
     } finally {

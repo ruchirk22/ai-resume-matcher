@@ -25,6 +25,9 @@ from .jd import router as jd_router
 from .resume import router as resume_router
 from .candidate_status import router as candidate_status_router
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(__file__), "..", "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -33,14 +36,25 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="AI Resume Matcher API")
 
+# Configure basic logging if not already configured by the host
+import logging as _logging
+if not _logging.getLogger().handlers:
+    _logging.basicConfig(level=_logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
+
 # --- System Limits (MVP requirements) ---
 MAX_JDS = 3
 MAX_RESUMES = 20
+
+PRODUCTION_ORIGIN = os.getenv("FRONTEND_URL")
 
 origins = [
     "http://localhost:3000",
     "http://localhost:3001",
 ]
+
+if PRODUCTION_ORIGIN:
+    origins.append(PRODUCTION_ORIGIN)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -48,6 +62,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health", tags=["admin"])
+def health_check():
+    """Simple health endpoint for load balancer / Render readiness checks."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "version": "1.0"
+    }
 
 # --- Reusable Ranking Engine ---
 
@@ -323,7 +347,7 @@ async def ensure_analysis_for_jd(
                 db_jd.text or "", jd_skills, resume.text or ""
             )
         except Exception as e:
-            print(f"AI evaluation failed for resume {resume.id}: {e}")
+            logger.exception("AI evaluation failed for resume %s", resume.id)
             # Fallback: use parsed skills only
             parsed = (resume.parsed_json or {}).get("skills", []) if resume.parsed_json else []
             matched_skills = [s for s in parsed if s.lower() in {r.lower() for r in jd_skills["required_skills"] + jd_skills["nice_to_have_skills"]}]
@@ -393,11 +417,11 @@ async def ensure_analysis_for_jd(
         db.commit()
         # Debug/log: confirm persistence for easier troubleshooting
         try:
-            print(f"Persisted analysis for resume {resume.id} jd {db_jd.id}: rating={analysis_obj.get('match_rating')} score={analysis_obj.get('score')}")
+            logger.info("Persisted analysis for resume %s jd %s: rating=%s score=%s", resume.id, db_jd.id, analysis_obj.get('match_rating'), analysis_obj.get('score'))
         except Exception:
             pass
     except Exception as e:
-        print(f"Failed to persist analysis for resume {resume.id}: {e}")
+        logger.exception("Failed to persist analysis for resume %s", resume.id)
         db.rollback()
 
     return analysis_obj
@@ -548,16 +572,30 @@ async def analyze_preliminary_only(
     resumes = db.query(models.Resume).filter_by(user_id=current_user.id).all()
     key = f"jd_{jd_id}"
 
-    # Find resumes that are missing AI analysis for this JD
+    # Targets: only those missing a per-JD analysis
     prelim_targets = [r for r in resumes if not (isinstance(r.analysis_results, dict) and key in (r.analysis_results or {}))]
 
-    # Run AI analysis for missing ones (persisted by ensure_analysis_for_jd)
-    for r in prelim_targets:
-        try:
-            await ensure_analysis_for_jd(r, db_jd, db, force=False, skip_ai=False)
-        except Exception as e:
-            # If AI fails, we do not overwrite prior state; we simply log and continue
-            print(f"AI analysis failed for resume {r.id}: {e}")
+    if prelim_targets:
+        # Mirror full_analysis_for_jd concurrency and semantic prefilter behavior
+        semaphore = asyncio.Semaphore(5)
+
+        async def evaluate_and_persist(resume: models.Resume):
+            async with semaphore:
+                # semantic prefilter: skip AI if low-similarity and persist nothing (leave heuristic)
+                if resume.embedding is not None and db_jd.embedding is not None:
+                    sim = cosine_similarity(resume.embedding, db_jd.embedding)
+                else:
+                    sim = 0.0
+                has_prior = isinstance(resume.analysis_results, dict) and key in (resume.analysis_results or {})
+                if sim < 0.15 and not has_prior:
+                    # do not call AI; heuristic will be returned in listing
+                    return
+                try:
+                    await ensure_analysis_for_jd(resume, db_jd, db, force=False, skip_ai=False)
+                except Exception as e:
+                    print(f"AI analysis failed for resume {resume.id}: {e}")
+
+        await asyncio.gather(*(evaluate_and_persist(r) for r in prelim_targets))
 
     # Build the response: prefer persisted AI analysis if available, else compute preliminary
     out: List[schemas.DetailedCandidate] = []
@@ -592,8 +630,8 @@ async def analyze_preliminary_only(
     out.sort(key=lambda c: c.score, reverse=True)
     return out
 
-@app.get("/candidates/status/{jd_id}", response_model=schemas.JDAnalysisStatus, tags=["candidates"])
-def jd_analysis_status(
+@app.get("/candidates/status/summary/{jd_id}", response_model=schemas.JDAnalysisStatus, tags=["candidates"])
+def jd_analysis_summary(
     jd_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),

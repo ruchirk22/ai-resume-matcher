@@ -15,7 +15,7 @@ function Login() {
     setIsLoading(true);
     try {
       const response = await login(email, password);
-      sessionStorage.setItem('token', response.data.access_token);
+  localStorage.setItem('token', response.data.access_token);
       toast.success('Logged in successfully!');
       navigate('/dashboard');
     } catch (err) {

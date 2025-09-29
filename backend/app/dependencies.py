@@ -5,6 +5,9 @@ from sqlalchemy.orm import Session
 
 from . import crud, schemas, security
 from .database import get_db
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_current_user(authorization: str | None = Header(default=None, alias="Authorization"), db: Session = Depends(get_db)):
     """Simplified auth dependency: directly parse Bearer token from Authorization header.
@@ -18,11 +21,18 @@ def get_current_user(authorization: str | None = Header(default=None, alias="Aut
         headers={"WWW-Authenticate": "Bearer"},
     )
     if not authorization or not authorization.lower().startswith("bearer "):
+        logger.debug("DEBUG auth: missing or malformed Authorization header: %s", authorization)
         raise credentials_exception
     token = authorization.split(" ", 1)[1].strip()
     try:
+        # Debug: show token prefix (do NOT log full token in production)
+        try:
+            logger.debug("DEBUG auth: received token prefix: %s...", token[:16])
+        except Exception:
+            pass
         payload = jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
         email: str = payload.get("sub")
+        logger.debug("DEBUG auth: decoded sub=%s", email)
         if email is None:
             raise credentials_exception
         token_data = schemas.TokenData(email=email)

@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 import os
 import re
+import logging
 import fitz  # PyMuPDF
 from io import BytesIO
 import requests  # NEW
@@ -31,6 +32,8 @@ from .database import get_db
 from .dependencies import get_current_user
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 # In-memory job tracking for simplicity. For production, use Redis or a DB table.
 job_statuses: Dict[str, schemas.JobStatus] = {}
@@ -104,13 +107,13 @@ async def process_resume_files(file_data: List[dict], user_id: int, job_id: str,
             # Generate hash to identify duplicates
             content_hash = hashlib.sha256(content).hexdigest()
             if content_hash in existing_hashes:
-                print(f"Skipping duplicate resume: {filename}")
+                logger.info("Skipping duplicate resume: %s", filename)
                 continue
 
             # Extract text from file
             resume_text = services.extract_text_from_file(filename, content)
             if not resume_text.strip():
-                print(f"Skipping empty resume: {filename}")
+                logger.info("Skipping empty resume: %s", filename)
                 try:
                     os.remove(dest_path)
                 except Exception:
@@ -148,14 +151,14 @@ async def process_resume_files(file_data: List[dict], user_id: int, job_id: str,
             db.commit()
             
         except Exception as e:
-            print(f"Failed to process {filename}: {e}")
+            logger.exception("Failed to process %s", filename)
         finally:
             # Update progress regardless of success/failure
             job_statuses[job_id].progress = i + 1
 
     # Mark job as completed
     job_statuses[job_id].status = "completed"
-    print(f"Job {job_id} completed.")
+    logger.info("Job %s completed.", job_id)
 
 
 @router.post("/bulk-upload", status_code=status.HTTP_202_ACCEPTED)
@@ -172,20 +175,36 @@ async def bulk_upload_resumes(
     remaining_slots = 20 - existing
     if remaining_slots <= 0:
         raise HTTPException(status_code=400, detail="Resume limit reached (max 20 for MVP). Delete some to upload more.")
-    
-    # Preload all file data before passing to background task
+
+    # Preload file data and detect duplicates synchronously so we can notify the user
     file_data = []
-    # Respect remaining slots
-    limited_files = files[:remaining_slots]
-    for file in limited_files:
+    duplicates = []
+
+    # Get existing content hashes to detect duplicates
+    existing_hashes = {h[0] for h in db.query(models.Resume.content_hash).filter(models.Resume.user_id == current_user.id).all()}
+
+    for file in files:
+        if len(file_data) >= remaining_slots:
+            break
         try:
             content = await file.read()
+            content_hash = hashlib.sha256(content).hexdigest()
+            if content_hash in existing_hashes:
+                # record duplicate filename and skip scheduling
+                duplicates.append(file.filename or 'unknown')
+                continue
             file_data.append({"filename": file.filename, "content": content})
+            # also add this hash to existing_hashes to prevent duplicates in same batch
+            existing_hashes.add(content_hash)
         except Exception as e:
-            print(f"Failed to read {file.filename}: {e}")
-    
-    background_tasks.add_task(process_resume_files, file_data, current_user.id, job_id, db)
-    return {"job_id": job_id, "message": f"Started processing {len(file_data)} resumes (limit enforced)."}
+            logger.exception("Failed to read %s", file.filename)
+
+    if len(file_data) > 0:
+        background_tasks.add_task(process_resume_files, file_data, current_user.id, job_id, db)
+        return {"job_id": job_id, "message": f"Started processing {len(file_data)} resumes (limit enforced).", "duplicates": duplicates}
+    else:
+        # Nothing to process (all duplicates or read errors)
+        return {"job_id": None, "message": "No new resumes to process (duplicates or read errors).", "duplicates": duplicates}
 
 @router.get("/bulk-upload/status/{job_id}", response_model=schemas.JobStatus)
 def get_job_status(job_id: str):

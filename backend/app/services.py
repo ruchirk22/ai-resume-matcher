@@ -5,6 +5,9 @@ import json
 import asyncio
 from typing import List, Dict, Any, Tuple
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 import pypdf
 import docx2txt
@@ -58,7 +61,7 @@ def extract_text_from_file(filename: str, content: bytes) -> str:
             pdf_reader = pypdf.PdfReader(io.BytesIO(content))
             return "".join(page.extract_text() or "" for page in pdf_reader.pages)
         except Exception as e:
-            print(f"Error reading PDF {filename}: {e}")
+            logger.exception("Error reading PDF %s", filename)
             return ""
     elif filename.lower().endswith(".docx"):
         return docx2txt.process(io.BytesIO(content))
@@ -87,9 +90,9 @@ async def get_embedding(text: str) -> List[float]:
             return result.get('embedding', [0.0]*768)
         except Exception as e:
             last_err = e
-            print(f"Embedding model '{model_name}' failed: {e}")
+            logger.debug("Embedding model '%s' failed: %s", model_name, e)
             continue
-    print(f"All embedding models failed. Returning zero-vector. Last error: {last_err}")
+    logger.warning("All embedding models failed. Returning zero-vector. Last error: %s", last_err)
     return [0.0] * 768
 
 @retry(wait=wait_random_exponential(min=1, max=30), stop=stop_after_attempt(2))
@@ -111,9 +114,9 @@ async def call_gemini_api(prompt: str, response_schema: Any) -> Dict[str, Any]:
             return json.loads(response_text) if response_text else {}
         except Exception as e:
             last_err = e
-            print(f"Generation model '{model_name}' failed: {e}")
+            logger.debug("Generation model '%s' failed: %s", model_name, e)
             continue
-    print(f"All generation models failed. Returning fallback empty structure. Last error: {last_err}")
+    logger.warning("All generation models failed. Returning fallback empty structure. Last error: %s", last_err)
     # Build empty object respecting schema top-level keys if possible
     empty: Dict[str, Any] = {}
     if isinstance(response_schema, dict) and response_schema.get('properties'):
