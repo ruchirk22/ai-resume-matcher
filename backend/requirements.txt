@@ -22,3 +22,4 @@ PyMuPDF
 python-docx
 requests
 rapidfuzz
+Werkzeug
