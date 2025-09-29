@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import * as api from '../services/api';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
-import { LogOut, Plus, Trash2, Upload, Check, X, ChevronRight, FileDown, RotateCw, ExternalLink, ChevronUp } from 'lucide-react';
+import { LogOut, Plus, Trash2, Upload, Check, X, ChevronRight, FileDown, RotateCw, ExternalLink, ChevronUp, Info } from 'lucide-react';
 import Papa from 'papaparse';
 import * as Progress from '@radix-ui/react-progress';
 
@@ -26,6 +26,8 @@ function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [isJdModalOpen, setIsJdModalOpen] = useState(false);
   const [isResumeModalOpen, setIsResumeModalOpen] = useState(false);
+  const [isSkillsModalOpen, setIsSkillsModalOpen] = useState(false);
+  const [skillsModalData, setSkillsModalData] = useState({ required_skills: [], nice_to_have_skills: [], title: '' });
   const [uploadStatus, setUploadStatus] = useState(null);
   const [selectedCandidates, setSelectedCandidates] = useState(new Set());
   const [statusMap, setStatusMap] = useState({}); // { resumeId: "Status" }
@@ -54,6 +56,15 @@ function Dashboard() {
       console.error("Failed to fetch JDs", error);
     }
   }, [selectedJd]);
+
+  const showJdSkills = (jd) => {
+    setSkillsModalData({
+      required_skills: jd?.required_skills || [],
+      nice_to_have_skills: jd?.nice_to_have_skills || [],
+      title: jd?.title || ''
+    });
+    setIsSkillsModalOpen(true);
+  };
 
   // Whenever analysisCache or selectedJd changes, ensure candidate list reflects any
   // cached AI analyses for the selected JD (this prevents transient reversion to Preliminary)
@@ -415,6 +426,7 @@ function Dashboard() {
                 setSelectedJd={setSelectedJd} 
                 onNewJd={() => setIsJdModalOpen(true)}
                 onDeleteJd={handleJdDelete}
+                onShowSkills={showJdSkills}
               />
             </div>
 
@@ -459,12 +471,13 @@ function Dashboard() {
         </main>
         <JDModal isOpen={isJdModalOpen} onClose={()=>setIsJdModalOpen(false)} onUploadSuccess={(jd)=>fetchJds(jd)} />
         <ResumeModal isOpen={isResumeModalOpen} onClose={()=>setIsResumeModalOpen(false)} onUploadSuccess={handleResumeUploadSuccess} />
+        <JdSkillsModal isOpen={isSkillsModalOpen} onClose={()=>setIsSkillsModalOpen(false)} data={skillsModalData} />
       </div>
     );
 
 }
 
-const JdList = ({ jds, selectedJd, setSelectedJd, onNewJd, onDeleteJd }) => (
+const JdList = ({ jds, selectedJd, setSelectedJd, onNewJd, onDeleteJd, onShowSkills }) => (
   <>
     <div className="flex items-center justify-between">
       <h2 className="text-lg font-semibold text-slate-700">Job Descriptions</h2>
@@ -478,7 +491,10 @@ const JdList = ({ jds, selectedJd, setSelectedJd, onNewJd, onDeleteJd }) => (
         <div key={jd.id} onClick={() => setSelectedJd(jd)} className={`p-3 rounded-md cursor-pointer border-2 transition-colors ${selectedJd?.id === jd.id ? 'bg-indigo-50 border-indigo-500' : 'hover:bg-slate-50 border-transparent'}`}>
           <div className="flex justify-between items-start">
             <p className={`font-semibold ${selectedJd?.id === jd.id ? 'text-indigo-800' : 'text-slate-800'}`}>{jd.title}</p>
-            <button onClick={(e) => onDeleteJd(jd.id, e)} className="text-slate-400 hover:text-red-500 p-1" aria-label="Delete job"><Trash2 size={16} /></button>
+            <div className="flex items-center gap-2">
+              <button onClick={(e) => { e.stopPropagation(); onShowSkills && onShowSkills(jd); }} className="text-slate-400 hover:text-indigo-600 p-1" aria-label="Show JD skills" title="Show extracted skills"><Info size={16} /></button>
+              <button onClick={(e) => onDeleteJd(jd.id, e)} className="text-slate-400 hover:text-red-500 p-1" aria-label="Delete job"><Trash2 size={16} /></button>
+            </div>
           </div>
         </div>
       ))}
@@ -1103,3 +1119,34 @@ const ResumeModal = ({ isOpen, onClose, onUploadSuccess }) => {
 }
 
 export default Dashboard;
+
+// Small modal to display JD-extracted skills. Kept inline to minimize changes.
+const JdSkillsModal = ({ isOpen, onClose, data }) => {
+  if (!isOpen) return null;
+  const { required_skills = [], nice_to_have_skills = [], title = '' } = data || {};
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={`Skills extracted for: ${title || 'Job'}`}>
+      <div className="p-4 space-y-3">
+        <div>
+          <h4 className="font-semibold">Required skills ({required_skills.length})</h4>
+          {required_skills.length === 0 ? <p className="text-sm text-slate-500">No required skills detected.</p> : (
+            <ul className="list-disc list-inside mt-2 text-sm">
+              {required_skills.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          )}
+        </div>
+        <div>
+          <h4 className="font-semibold">Nice-to-have ({nice_to_have_skills.length})</h4>
+          {nice_to_have_skills.length === 0 ? <p className="text-sm text-slate-500">No nice-to-have skills detected.</p> : (
+            <ul className="list-disc list-inside mt-2 text-sm">
+              {nice_to_have_skills.map((s, i) => <li key={i}>{s}</li>)}
+            </ul>
+          )}
+        </div>
+        <div className="flex justify-end">
+          <button onClick={onClose} className="px-3 py-1 bg-slate-200 rounded">Close</button>
+        </div>
+      </div>
+    </Modal>
+  );
+};
